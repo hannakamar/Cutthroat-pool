@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Cutthroat Pool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a202c; color: white; font-family: 'Inter', sans-serif; }
+        canvas { display: block; margin: 0 auto; background-color: #2b6cb0; border: 12px solid #744210; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); touch-action: none; }
+        .pocket { position: absolute; background-color: #1a202c; border-radius: 50%; }
+        .modal-bg { background-color: rgba(0, 0, 0, 0.8); }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col items-center justify-center relative">
+
+    <!-- Lobby Screen -->
+    <div id="lobbyScreen" class="absolute inset-0 modal-bg flex flex-col items-center justify-center z-50">
+        <div class="bg-gray-800 p-8 rounded-xl shadow-2xl max-w-md w-full text-center">
+            <h1 class="text-3xl font-bold text-blue-400 mb-6">Cutthroat Pool</h1>
+            <p class="text-gray-300 mb-4">Select your name to join the table</p>
+            <div class="grid grid-cols-2 gap-3 mb-6">
+                <button onclick="selectName('Tamer')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">Tamer</button>
+                <button onclick="selectName('Nizar')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">Nizar</button>
+                <button onclick="selectName('Ali')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">Ali</button>
+                <button onclick="selectName('Firas')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">Firas</button>
+                <button onclick="selectName('Osama')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">Osama</button>
+                <button onclick="selectName('Suleiman')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">Suleiman</button>
+                <button onclick="selectName('George')" class="btn-name bg-blue-600 hover:bg-blue-500 py-2 rounded font-bold transition">George</button>
+            </div>
+            <p id="lobbyStatus" class="text-sm text-yellow-400 h-6">Connecting to server...</p>
+        </div>
+    </div>
+
+    <!-- Game UI -->
+    <div id="gameUI" class="hidden w-full max-w-5xl flex-col items-center p-4">
+        
+        <!-- Scoreboard -->
+        <div class="w-full flex justify-between items-start mb-4 bg-gray-800 p-4 rounded-lg border border-gray-700 shadow-lg">
+            
+            <!-- Player 1 -->
+            <div id="p1-score" class="flex-1 flex flex-col items-center border-r border-gray-600">
+                <h3 id="p1-name" class="text-lg font-bold text-gray-400">Waiting...</h3>
+                <span class="text-xs text-gray-500 mb-2">Group 1-5</span>
+                <div id="p1-balls" class="flex gap-1 h-6"></div>
+            </div>
+
+            <!-- Player 2 -->
+            <div id="p2-score" class="flex-1 flex flex-col items-center border-r border-gray-600">
+                <h3 id="p2-name" class="text-lg font-bold text-gray-400">Waiting...</h3>
+                <span class="text-xs text-gray-500 mb-2">Group 6-10</span>
+                <div id="p2-balls" class="flex gap-1 h-6"></div>
+            </div>
+
+            <!-- Player 3 -->
+            <div id="p3-score" class="flex-1 flex flex-col items-center">
+                <h3 id="p3-name" class="text-lg font-bold text-gray-400">Waiting...</h3>
+                <span class="text-xs text-gray-500 mb-2">Group 11-15</span>
+                <div id="p3-balls" class="flex gap-1 h-6"></div>
+            </div>
+        </div>
+
+        <div class="w-full flex justify-between items-center mb-2 px-4">
+            <div id="statusMessage" class="text-xl font-bold text-yellow-400 tracking-wide">Connecting...</div>
+            <button onclick="resetGame()" id="resetBtn" class="hidden bg-red-600 hover:bg-red-500 text-white px-4 py-1 rounded font-bold text-sm shadow">Reset Game</button>
+        </div>
+
+        <!-- Canvas Container -->
+        <div class="relative w-full flex justify-center">
+            <canvas id="poolTable" width="800" height="400"></canvas>
+        </div>
+        
+        <div class="mt-4 text-sm text-gray-400">
+            Drag from the cue ball to aim and shoot. You can only shoot on your turn.
+        </div>
+    </div>
+
+    <!-- Firebase Script -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables & Firebase Setup
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'cutthroat-pool-local';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "mock", authDomain: "mock", projectId: "mock", storageBucket: "mock", messagingSenderId: "mock", appId: "mock"
+        };
+        
+        let app, auth, db, user;
+        let myPlayerName = null;
+        let unsubscribe = null;
+        
+        // Game Constants
+        const TABLE_WIDTH = 800;
+        const TABLE_HEIGHT = 400;
+        const BALL_RADIUS = 10;
+        const FRICTION = 0.985;
+        const POCKET_RADIUS = 20;
+        
+        const POCKETS = [
+            {x: 0, y: 0}, {x: TABLE_WIDTH/2, y: -5}, {x: TABLE_WIDTH, y: 0},
+            {x: 0, y: TABLE_HEIGHT}, {x: TABLE_WIDTH/2, y: TABLE_HEIGHT+5}, {x: TABLE_WIDTH, y: TABLE_HEIGHT}
+        ];
+
+        const BALL_COLORS = [
+            '#ffffff', '#facc15', '#2563eb', '#dc2626', '#4c1d95', '#ea580c', '#16a34a', '#7f1d1d', '#000000',
+            '#facc15', '#2563eb', '#dc2626', '#4c1d95', '#ea580c', '#16a34a', '#7f1d1d'
+        ];
+
+        // Game State
+        let gameState = {
+            players: [], // { id, name, group }
+            turnIndex: 0,
+            status: 'waiting', // waiting, playing, game_over
+            balls: [], // { id, x, y, vx, vy, pocketed }
+            lastShotId: null,
+            winner: null
+        };
+        
+        let isSimulating = false;
+        let isAiming = false;
+        let mouseX = 0, mouseY = 0;
+        let canvas, ctx;
+
+        // --- Initialization ---
+
+        async function init() {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                if (token) {
+                    await signInWithCustomToken(auth, token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (u) => {
+                    if (u) {
+                        user = u;
+                        document.getElementById('lobbyStatus').textContent = 'Connected. Pick a name.';
+                    }
+                });
+                
+                setupCanvas();
+            } catch (err) {
+                console.error("Firebase init error:", err);
+                document.getElementById('lobbyStatus').textContent = 'Error connecting to game server.';
+            }
+        }
+
+        window.selectName = async function(name) {
+            if (!user) return;
+            myPlayerName = name;
+            document.getElementById('lobbyStatus').textContent = `Joining as ${name}...`;
+            
+            const gameRef = doc(db, 'artifacts', appId, 'public', 'data', 'cutthroat_room');
+            
+            try {
+                const docSnap = await getDoc(gameRef);
+                let currentPlayers = [];
+                if (docSnap.exists()) {
+                    currentPlayers = docSnap.data().players || [];
+                }
+                
+                // Add player if not already in and room has space
+                const existingMe = currentPlayers.find(p => p.id === user.uid);
+                if (!existingMe && currentPlayers.length < 3) {
+                    currentPlayers.push({
+                        id: user.uid,
+                        name: name,
+                        group: currentPlayers.length // 0, 1, or 2
+                    });
+                    
+                    const updateData = { players: currentPlayers };
+                    if (currentPlayers.length === 3 && docSnap.data()?.status !== 'playing') {
+                        updateData.status = 'playing';
+                        updateData.balls = generateRack();
+                        updateData.turnIndex = 0;
+                        updateData.lastShotId = null;
+                        updateData.winner = null;
+                    }
+                    
+                    if (docSnap.exists()) {
+                        await updateDoc(gameRef, updateData);
+                    } else {
+                        await setDoc(gameRef, {
+                            players: currentPlayers,
+                            status: 'waiting',
+                            turnIndex: 0,
+                            balls: [],
+                            lastShotId: null,
+                            winner: null
+                        });
+                    }
+                } else if (!existingMe && currentPlayers.length >= 3) {
+                    alert("Room is full! You can spectate.");
+                }
+
+                document.getElementById('lobbyScreen').classList.add('hidden');
+                document.getElementById('gameUI').classList.remove('hidden');
+                document.getElementById('gameUI').classList.add('flex');
+                
+                // Start listening to state
+                listenToGame(gameRef);
+                
+            } catch (err) {
+                console.error(err);
+                document.getElementById('lobbyStatus').textContent = 'Failed to join.';
+            }
+        };
+
+        function generateRack() {
+            let balls = [{ id: 0, x: 200, y: 200, vx: 0, vy: 0, pocketed: false }]; // Cue ball
+            
+            // Triangle setup at foot spot
+            const startX = 600;
+            const startY = 200;
+            const spacing = BALL_RADIUS * 2 + 0.1;
+            
+            // Cutthroat specific placements: 1 at apex, 6 and 11 at bottom corners
+            const placements = [
+                { row: 0, col: 0, id: 1 },
+                { row: 1, col: -0.5, id: 2 }, { row: 1, col: 0.5, id: 3 },
+                { row: 2, col: -1, id: 4 }, { row: 2, col: 0, id: 5 }, { row: 2, col: 1, id: 12 },
+                { row: 3, col: -1.5, id: 7 }, { row: 3, col: -0.5, id: 8 }, { row: 3, col: 0.5, id: 9 }, { row: 3, col: 1.5, id: 10 },
+                { row: 4, col: -2, id: 6 }, { row: 4, col: -1, id: 13 }, { row: 4, col: 0, id: 14 }, { row: 4, col: 1, id: 15 }, { row: 4, col: 2, id: 11 }
+            ];
+
+            placements.forEach(p => {
+                balls.push({
+                    id: p.id,
+                    x: startX + p.row * (spacing * Math.sqrt(3)/2),
+                    y: startY + p.col * spacing,
+                    vx: 0, vy: 0,
+                    pocketed: false
+                });
+            });
+            return balls;
+        }
+
+        function listenToGame(gameRef) {
+            if (unsubscribe) unsubscribe();
+            unsubscribe = onSnapshot(gameRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    
+                    // If we are currently simulating locally, ignore state updates to prevent jitter
+                    // UNLESS it's a brand new shot triggered by someone else
+                    const isNewShot = data.lastShotId && data.lastShotId !== gameState.lastShotId;
+                    
+                    if (!isSimulating || isNewShot) {
+                        gameState = data;
+                        updateUI();
+                        
+                        if (isNewShot) {
+                            // Someone else shot, start local simulation
+                            isSimulating = true;
+                            requestAnimationFrame(gameLoop);
+                        }
+                    }
+                }
+            }, (error) => {
+                console.error("Snapshot error:", error);
+            });
+        }
+
+        // --- Core Physics & Game Loop ---
+
+        function setupCanvas() {
+            canvas = document.getElementById('poolTable');
+            ctx = canvas.getContext('2d');
+            
+            // Mouse interactions
+            canvas.addEventListener('mousedown', (e) => {
+                if (isMyTurn() && !isSimulating && getActiveCueBall()) {
+                    isAiming = true;
+                    updateMousePos(e);
+                }
+            });
+            
+            canvas.addEventListener('mousemove', (e) => {
+                if (isAiming) updateMousePos(e);
+            });
+            
+            window.addEventListener('mouseup', async () => {
+                if (isAiming) {
+                    isAiming = false;
+                    await executeShot();
+                }
+            });
+
+            // Touch support
+            canvas.addEventListener('touchstart', (e) => {
+                if (isMyTurn() && !isSimulating && getActiveCueBall()) {
+                    isAiming = true;
+                    updateTouchPos(e);
+                }
+            });
+            canvas.addEventListener('touchmove', (e) => {
+                if (isAiming) updateTouchPos(e);
+            });
+            window.addEventListener('touchend', async () => {
+                 if (isAiming) {
+                    isAiming = false;
+                    await executeShot();
+                }
+            });
+
+            // Start passive render loop
+            requestAnimationFrame(renderOnlyLoop);
+        }
+
+        function getActiveCueBall() {
+            if (!gameState.balls) return null;
+            return gameState.balls.find(b => b.id === 0 && !b.pocketed);
+        }
+
+        function updateMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+        }
+
+        function updateTouchPos(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            mouseX = (e.touches[0].clientX - rect.left) * (canvas.width / rect.width);
+            mouseY = (e.touches[0].clientY - rect.top) * (canvas.height / rect.height);
+        }
+
+        function isMyTurn() {
+            if (gameState.status !== 'playing') return false;
+            const currentPlayer = gameState.players[gameState.turnIndex];
+            return currentPlayer && currentPlayer.id === user.uid;
+        }
+
+        async function executeShot() {
+            const cue = getActiveCueBall();
+            if (!cue) return;
+
+            const dx = cue.x - mouseX;
+            const dy = cue.y - mouseY;
+            let force = Math.min(Math.sqrt(dx*dx + dy*dy) * 0.15, 25); // Cap max force
+            
+            if (force < 1) return; // Ignore tiny clicks
+
+            const angle = Math.atan2(dy, dx);
+            cue.vx = Math.cos(angle) * force;
+            cue.vy = Math.sin(angle) * force;
+
+            const shotId = Date.now().toString();
+            gameState.lastShotId = shotId;
+            isSimulating = true;
+            
+            // Broadcast the initial shot vector
+            const gameRef = doc(db, 'artifacts', appId, 'public', 'data', 'cutthroat_room');
+            try {
+                await updateDoc(gameRef, {
+                    balls: gameState.balls,
+                    lastShotId: shotId
+                });
+            } catch(e) { console.error(e); }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function gameLoop() {
+            if (!isSimulating) return;
+
+            let ballsMoving = false;
+            let ballsPocketedThisTurn = [];
+
+            // Update Physics
+            for (let i = 0; i < gameState.balls.length; i++) {
+                let b = gameState.balls[i];
+                if (b.pocketed) continue;
+
+                // Move
+                b.x += b.vx;
+                b.y += b.vy;
+
+                // Friction
+                b.vx *= FRICTION;
+                b.vy *= FRICTION;
+                
+                if (Math.abs(b.vx) < 0.05) b.vx = 0;
+                if (Math.abs(b.vy) < 0.05) b.vy = 0;
+
+                if (b.vx !== 0 || b.vy !== 0) ballsMoving = true;
+
+                // Wall Collisions
+                if (b.x < BALL_RADIUS) { b.x = BALL_RADIUS; b.vx *= -0.8; }
+                if (b.x > TABLE_WIDTH - BALL_RADIUS) { b.x = TABLE_WIDTH - BALL_RADIUS; b.vx *= -0.8; }
+                if (b.y < BALL_RADIUS) { b.y = BALL_RADIUS; b.vy *= -0.8; }
+                if (b.y > TABLE_HEIGHT - BALL_RADIUS) { b.y = TABLE_HEIGHT - BALL_RADIUS; b.vy *= -0.8; }
+
+                // Pocket detection
+                for (let p of POCKETS) {
+                    const pdx = b.x - p.x;
+                    const pdy = b.y - p.y;
+                    if (Math.sqrt(pdx*pdx + pdy*pdy) < POCKET_RADIUS) {
+                        b.pocketed = true;
+                        b.vx = 0; b.vy = 0;
+                        ballsPocketedThisTurn.push(b.id);
+                        break;
+                    }
+                }
+            }
+
+            // Ball-Ball Collisions
+            for (let i = 0; i < gameState.balls.length; i++) {
+                for (let j = i + 1; j < gameState.balls.length; j++) {
+                    let b1 = gameState.balls[i];
+                    let b2 = gameState.balls[j];
+                    if (b1.pocketed || b2.pocketed) continue;
+
+                    let dx = b2.x - b1.x;
+                    let dy = b2.y - b1.y;
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+
+                    if (dist < BALL_RADIUS * 2) {
+                        // Resolve overlap
+                        let overlap = BALL_RADIUS * 2 - dist;
+                        let nx = dx / dist;
+                        let ny = dy / dist;
+                        b1.x -= nx * overlap / 2;
+                        b2.x += nx * overlap / 2;
+
+                        // Resolve velocity (1D elastic)
+                        let kx = b1.vx - b2.vx;
+                        let ky = b1.vy - b2.vy;
+                        let p = (nx * kx + ny * ky);
+                        
+                        b1.vx -= p * nx;
+                        b1.vy -= p * ny;
+                        b2.vx += p * nx;
+                        b2.vy += p * ny;
+                    }
+                }
+            }
+
+            draw();
+
+            if (ballsMoving) {
+                requestAnimationFrame(gameLoop);
+            } else {
+                isSimulating = false;
+                if (isMyTurn()) finalizeTurn(ballsPocketedThisTurn);
+            }
+        }
+
+        function renderOnlyLoop() {
+            if (!isSimulating) draw();
+            requestAnimationFrame(renderOnlyLoop);
+        }
+
+        // --- Rendering ---
+
+        function draw() {
+            // Clear table
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Head String
+            ctx.beginPath();
+            ctx.moveTo(200, 0);
+            ctx.lineTo(200, 400);
+            ctx.strokeStyle = "rgba(255,255,255,0.2)";
+            ctx.stroke();
+
+            // Draw Pockets
+            ctx.fillStyle = "#111";
+            POCKETS.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, POCKET_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Draw Balls
+            if (gameState.balls) {
+                gameState.balls.forEach(b => {
+                    if (b.pocketed) return;
+                    
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, BALL_RADIUS, 0, Math.PI * 2);
+                    ctx.fillStyle = BALL_COLORS[b.id];
+                    ctx.fill();
+                    
+                    // Ball highlight/shadow
+                    const gradient = ctx.createRadialGradient(b.x - 3, b.y - 3, 2, b.x, b.y, BALL_RADIUS);
+                    gradient.addColorStop(0, 'rgba(255,255,255,0.8)');
+                    gradient.addColorStop(0.5, 'rgba(255,255,255,0)');
+                    gradient.addColorStop(1, 'rgba(0,0,0,0.4)');
+                    ctx.fillStyle = gradient;
+                    ctx.fill();
+
+                    // Stripes
+                    if (b.id > 8) {
+                        ctx.beginPath();
+                        ctx.rect(b.x - BALL_RADIUS + 2, b.y - BALL_RADIUS/2, BALL_RADIUS*2 - 4, BALL_RADIUS);
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fill();
+                    }
+
+                    // Number
+                    if (b.id > 0) {
+                        ctx.fillStyle = (b.id > 8 || b.id === 1 || b.id === 2 || b.id === 3 || b.id === 4 || b.id === 5 || b.id===6 || b.id===7) ? "#000" : "#fff";
+                        if(b.id === 8) ctx.fillStyle = "#fff"; // 8 ball
+                        if(b.id > 8) ctx.fillStyle = "#000"; // stripes numbers on white bg
+
+                        // white circle for solids and stripes
+                        if(b.id !== 8) {
+                           ctx.beginPath();
+                           ctx.arc(b.x, b.y, BALL_RADIUS*0.5, 0, Math.PI*2);
+                           ctx.fillStyle = "#fff";
+                           ctx.fill();
+                           ctx.fillStyle = "#000";
+                        }
+                        
+                        ctx.font = "bold 10px Arial";
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText(b.id.toString(), b.x, b.y + 1);
+                    }
+                });
+            }
+
+            // Draw Aiming Line
+            if (isAiming && isMyTurn()) {
+                const cue = getActiveCueBall();
+                if (cue) {
+                    ctx.beginPath();
+                    ctx.moveTo(cue.x, cue.y);
+                    // Line goes OPPOSITE of mouse pull
+                    const dx = cue.x - mouseX;
+                    const dy = cue.y - mouseY;
+                    ctx.lineTo(cue.x + dx * 2, cue.y + dy * 2);
+                    ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+                    ctx.setLineDash([5, 5]);
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+        }
+
+        // --- Game Logic ---
+
+        async function finalizeTurn(pocketedBalls) {
+            // Cutthroat logic
+            let scratch = pocketedBalls.includes(0);
+            let nextTurn = gameState.turnIndex;
+
+            if (scratch) {
+                // Scratch: next player, cue ball resets
+                nextTurn = (gameState.turnIndex + 1) % 3;
+                let cue = gameState.balls.find(b => b.id === 0);
+                cue.pocketed = false;
+                cue.x = 200; cue.y = 200; cue.vx = 0; cue.vy = 0;
+            } else if (pocketedBalls.length === 0) {
+                // Missed: next player
+                nextTurn = (gameState.turnIndex + 1) % 3;
+            }
+            // If legal ball pocketed, turn remains same (nextTurn unchanged)
+
+            // Check for winner (last group standing)
+            const winner = checkWinCondition();
+
+            const gameRef = doc(db, 'artifacts', appId, 'public', 'data', 'cutthroat_room');
+            try {
+                await updateDoc(gameRef, {
+                    balls: gameState.balls,
+                    turnIndex: nextTurn,
+                    winner: winner,
+                    status: winner ? 'game_over' : 'playing'
+                });
+            } catch(e) { console.error("Error finalizing turn", e); }
+        }
+
+        function checkWinCondition() {
+            if(!gameState.balls || gameState.status !== 'playing') return null;
+            
+            let g1_alive = gameState.balls.some(b => b.id >= 1 && b.id <= 5 && !b.pocketed);
+            let g2_alive = gameState.balls.some(b => b.id >= 6 && b.id <= 10 && !b.pocketed);
+            let g3_alive = gameState.balls.some(b => b.id >= 11 && b.id <= 15 && !b.pocketed);
+
+            let aliveCount = (g1_alive?1:0) + (g2_alive?1:0) + (g3_alive?1:0);
+            
+            if (aliveCount === 1) {
+                if (g1_alive) return 0;
+                if (g2_alive) return 1;
+                if (g3_alive) return 2;
+            }
+            return null;
+        }
+
+        // --- UI Updates ---
+
+        function updateUI() {
+            if (gameState.status === 'waiting') {
+                document.getElementById('statusMessage').textContent = `Waiting for players... (${gameState.players.length}/3)`;
+                document.getElementById('resetBtn').classList.add('hidden');
+                return;
+            }
+
+            document.getElementById('resetBtn').classList.remove('hidden');
+
+            // Setup players and scoreboards
+            const p1 = gameState.players.find(p => p.group === 0);
+            const p2 = gameState.players.find(p => p.group === 1);
+            const p3 = gameState.players.find(p => p.group === 2);
+
+            updatePlayerUI('p1', p1, 1, 5, 0);
+            updatePlayerUI('p2', p2, 6, 10, 1);
+            updatePlayerUI('p3', p3, 11, 15, 2);
+
+            // Status message
+            if (gameState.status === 'game_over') {
+                const winnerName = gameState.players.find(p => p.group === gameState.winner)?.name || "Someone";
+                document.getElementById('statusMessage').textContent = `🏆 ${winnerName} Wins!`;
+                document.getElementById('statusMessage').className = "text-2xl font-bold text-green-400";
+            } else {
+                const activePlayer = gameState.players[gameState.turnIndex];
+                if (activePlayer) {
+                    if (activePlayer.id === user.uid) {
+                        document.getElementById('statusMessage').textContent = "🎯 Your Turn";
+                        document.getElementById('statusMessage').className = "text-xl font-bold text-green-400 drop-shadow-md";
+                    } else {
+                        document.getElementById('statusMessage').textContent = `⏳ ${activePlayer.name}'s Turn`;
+                        document.getElementById('statusMessage').className = "text-xl font-bold text-yellow-400";
+                    }
+                }
+            }
+        }
+
+        function updatePlayerUI(prefix, player, minBall, maxBall, groupIndex) {
+            document.getElementById(`${prefix}-name`).textContent = player ? player.name : 'Empty';
+            const container = document.getElementById(`${prefix}-balls`);
+            container.innerHTML = '';
+            
+            if (gameState.turnIndex === groupIndex && gameState.status === 'playing') {
+                document.getElementById(`${prefix}-score`).classList.add('bg-gray-700', 'rounded', 'shadow-inner');
+            } else {
+                document.getElementById(`${prefix}-score`).classList.remove('bg-gray-700', 'rounded', 'shadow-inner');
+            }
+
+            if (gameState.balls) {
+                let aliveCount = 0;
+                for (let i = minBall; i <= maxBall; i++) {
+                    const b = gameState.balls.find(ball => ball.id === i);
+                    if (b && !b.pocketed) {
+                        aliveCount++;
+                        const div = document.createElement('div');
+                        div.className = 'w-5 h-5 rounded-full border border-gray-900 flex items-center justify-center text-[10px] font-bold shadow-sm';
+                        div.style.backgroundColor = BALL_COLORS[i];
+                        div.style.color = (i > 8 || i < 8) ? '#000' : '#fff'; 
+                        if(i === 8) div.style.color = "#fff";
+                        div.textContent = i;
+                        container.appendChild(div);
+                    }
+                }
+                
+                if (aliveCount === 0 && player) {
+                    document.getElementById(`${prefix}-name`).classList.add('line-through', 'text-red-500');
+                    document.getElementById(`${prefix}-name`).classList.remove('text-gray-400');
+                } else {
+                    document.getElementById(`${prefix}-name`).classList.remove('line-through', 'text-red-500');
+                    document.getElementById(`${prefix}-name`).classList.add('text-gray-400');
+                }
+            }
+        }
+
+        window.resetGame = async function() {
+            if (!user) return;
+            const gameRef = doc(db, 'artifacts', appId, 'public', 'data', 'cutthroat_room');
+            try {
+                await updateDoc(gameRef, {
+                    status: 'playing',
+                    balls: generateRack(),
+                    turnIndex: 0,
+                    winner: null,
+                    lastShotId: null
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        // Start
+        window.onload = init;
+
+    </script>
+</body>
+</html>
